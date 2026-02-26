@@ -1,0 +1,60 @@
+app:
+  name: DecisionModel
+  version: 1.0
+  forkHeightThresholdmm: 300
+  targetDistanceThresholdmm: 1500
+
+rfid:
+  endpoint: tcp://localhost:5556
+  topic: rfid
+  maxQueueSize: 10
+
+battery:
+  endpoint: tcp://localhost:5557
+  topic: battery
+  maxQueueSize: 10
+
+loadcell:
+  endpoint: tcp://localhost:5558
+  topic: loadcell
+  maxQueueSize: 10
+
+distanceHeight:
+  endpoint: tcp://localhost:5559
+  topic: distance/height_mm
+  maxQueueSize: 10
+
+distanceForward:
+  endpoint: tcp://localhost:5560
+  topic: distance/forward_mm
+  maxQueueSize: 10
+
+camResult:
+  endpoint: tcp://localhost:5561
+  topic: cam/pickState
+  maxQueueSize: 10
+
+lidarResult:
+  endpoint: tcp://localhost:5562
+  topic: lidar/pickState
+  maxQueueSize: 10
+
+ocrResult:
+  endpoint: tcp://localhost:5563
+  topic: ocr_value
+  maxQueueSize: 10
+
+slamResult:
+  endpoint: tcp://localhost:5564
+  topic: slam_value
+  maxQueueSize: 10
+
+volumeResult:
+  endpoint: tcp://localhost:5565
+  topic: volume_value
+  maxQueueSize: 10
+
+tabletComm:
+  ip: 127.0.0.1
+  port: 8051
+  byteBufferSize: 10240

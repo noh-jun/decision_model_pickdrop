@@ -1,0 +1,862 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>LogLib</name>
+    </assembly>
+    <members>
+        <member name="T:LogLib.log.core.OutputBinding">
+            <summary>
+            로그 출력 바인딩을 표현하는 값 타입이다.
+            </summary>
+            <remarks>
+            <para>
+            하나의 OutputBinding은 (LogLevel, StrategyKind, groupId) 조합을 의미하며, OutputRegistry에서 출력 라우팅 및 중복 검증의 최소 단위로 사용된다.
+            </para>
+            <para>
+            값 비교와 해시 기반 컬렉션(HashSet, Dictionary Key 등)에 사용되므로 <see cref="T:System.IEquatable`1"/>를 구현하고 불변(immutable) 구조로 설계되었다.
+            </para>
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.core.OutputBinding.#ctor(LogLib.log.model.LogLevel,LogLib.log.strategy.StrategyKind,System.Int32)">
+            <summary>
+            지정된 로그 레벨, 전략 종류, 그룹 ID로 OutputBinding을 생성한다.
+            </summary>
+            <param name="level">로그 레벨</param>
+            <param name="kind">출력 전략 종류</param>
+            <param name="groupId">출력 그룹 ID</param>
+        </member>
+        <member name="P:LogLib.log.core.OutputBinding.Level">
+            <summary>
+            로그 레벨을 반환한다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.core.OutputBinding.Kind">
+            <summary>
+            출력 전략의 종류를 반환한다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.core.OutputBinding.GroupId">
+            <summary>
+            출력 대상 그룹 ID를 반환한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.core.OutputBinding.Equals(LogLib.log.core.OutputBinding)">
+            <summary>
+            다른 OutputBinding과의 값 동등성을 비교한다.
+            </summary>
+            <param name="other">비교 대상 OutputBinding</param>
+            <returns>
+            Level, Kind, GroupId가 모두 동일하면 <c>true</c>, 그렇지 않으면 <c>false</c>
+            </returns>
+        </member>
+        <member name="M:LogLib.log.core.OutputBinding.Equals(System.Object)">
+            <summary>
+            객체 단위의 동등성 비교를 수행한다.
+            </summary>
+            <param name="obj">비교 대상 객체</param>
+            <returns>
+            obj가 OutputBinding이고 값이 동일하면 <c>true</c>, 아니면 <c>false</c>
+            </returns>
+        </member>
+        <member name="M:LogLib.log.core.OutputBinding.GetHashCode">
+            <summary>
+            해시 기반 컬렉션 사용을 위한 해시 코드를 반환한다.
+            </summary>
+            <remarks>
+            Level, Kind, GroupId의 조합을 기반으로 해시를 생성하며,
+            Equals 규약과 일관성을 유지한다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.core.OutputBinding.ToString">
+            <summary>
+            디버깅 및 로깅을 위한 문자열 표현을 반환한다.
+            </summary>
+            <returns>
+            "Level:Kind@group:GroupId" 형식의 문자열
+            </returns>
+        </member>
+        <member name="T:LogLib.log.core.OutputRegistry">
+            <summary>
+            로그 출력 바인딩(AddOutput) 정보를 등록하고, 로그 레벨 기준의 그룹 라우팅 정보를 제공하는 레지스트리이다.
+            </summary>
+            <remarks>
+            <para>
+            이 클래스는 LogManager의 설정 단계에서 사용되며, Start() 이후에는 구성이 변경되지 않도록 잠금(StartLocked)을 강제한다.
+            </para>
+            <para>
+            다음 규칙을 내부적으로 보장한다:
+            <list type="bullet">
+            <item>
+            <description>
+            (LogLevel, StrategyKind, groupId) 조합은 중복 등록될 수 없다.
+            </description>
+            </item>
+            <item>
+            <description>
+            Start() 이후에는 AddOutput 호출이 허용되지 않는다.
+            </description>
+            </item>
+            </list>
+            </para>
+            <para>
+            모든 공개 메서드는 내부 lock을 사용하여 스레드 안전하게 동작한다.
+            </para>
+            </remarks>
+        </member>
+        <member name="F:LogLib.log.core.OutputRegistry._lock">
+            <summary>
+            내부 상태 보호를 위한 동기화 객체.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.core.OutputRegistry._startLocked">
+            <summary>
+            Start() 이후 레지스트리가 잠겼는지 여부.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.core.OutputRegistry._bindings">
+            <summary>
+            전체 출력 바인딩 집합.
+            </summary>
+            <remarks>
+            (LogLevel, StrategyKind, groupId)의 완전한 유일성을 보장하기 위해
+            <see cref="T:LogLib.log.core.OutputBinding"/>을 키로 하는 HashSet을 사용한다.
+            </remarks>
+        </member>
+        <member name="F:LogLib.log.core.OutputRegistry._levelToGroups">
+            <summary>
+            로그 레벨별 그룹 ID 매핑 정보.
+            </summary>
+            <remarks>
+            로그 기록 시 빠른 라우팅을 위해
+            LogLevel → groupId 집합 구조로 유지된다.
+            </remarks>
+        </member>
+        <member name="F:LogLib.log.core.OutputRegistry._groupToKinds">
+            <summary>
+            그룹 ID별로 요구되는 출력 전략 종류 매핑 정보.
+            </summary>
+            <remarks>
+            LogManager.Start() 시점에 각 그룹에서
+            어떤 StrategyKind가 필요한지 계획하기 위해 사용된다.
+            </remarks>
+        </member>
+        <member name="P:LogLib.log.core.OutputRegistry.IsStartLocked">
+            <summary>
+            레지스트리가 Start 이후 잠금 상태인지 여부를 반환한다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.core.OutputRegistry.BindingCount">
+            <summary>
+            현재 등록된 출력 바인딩의 총 개수를 반환한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.core.OutputRegistry.LockForStart">
+            <summary>
+            레지스트리를 Start 상태로 잠근다.
+            </summary>
+            <remarks>
+            이 메서드 호출 이후에는 AddOutput 호출이 허용되지 않으며,
+            출력 구성은 실행 중 변경되지 않는다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.core.OutputRegistry.AddOutput(LogLib.log.model.LogLevel,LogLib.log.strategy.StrategyKind,System.Int32)">
+            <summary>
+            지정된 로그 레벨, 전략 종류, 그룹 ID 조합으로 출력 바인딩을 등록한다.
+            </summary>
+            <param name="level">로그 레벨</param>
+            <param name="kind">출력 전략 종류</param>
+            <param name="groupId">출력 그룹 ID</param>
+            <exception cref="T:System.InvalidOperationException">
+            <para>Start() 이후 레지스트리가 잠긴 상태에서 호출된 경우</para>
+            <para>동일한 (level, kind, groupId) 조합이 이미 등록된 경우</para>
+            </exception>
+            <remarks>
+            이 메서드는 다음 내부 자료구조를 동시에 갱신한다:
+            <list type="bullet">
+            <item>
+            <description>전체 중복 검사용 바인딩 집합</description>
+            </item>
+            <item>
+            <description>로그 레벨 → 그룹 ID 라우팅 테이블</description>
+            </item>
+            <item>
+            <description>그룹 ID → 필요 전략 종류 테이블</description>
+            </item>
+            </list>
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.core.OutputRegistry.GetGroupsForLevel(LogLib.log.model.LogLevel)">
+            <summary>
+            지정된 로그 레벨에 대해 라우팅 대상이 되는 그룹 ID 목록을 반환한다.
+            </summary>
+            <param name="level">로그 레벨</param>
+            <returns>
+            해당 로그 레벨에 매핑된 그룹 ID 배열.
+            매핑이 없으면 빈 배열을 반환한다.
+            </returns>
+        </member>
+        <member name="M:LogLib.log.core.OutputRegistry.GetKindsForGroup(System.Int32)">
+            <summary>
+            지정된 그룹 ID에 대해 필요한 출력 전략 종류 목록을 반환한다.
+            </summary>
+            <param name="groupId">출력 그룹 ID</param>
+            <returns>
+            해당 그룹에서 요구되는 StrategyKind 배열.
+            그룹이 존재하지 않으면 빈 배열을 반환한다.
+            </returns>
+            <remarks>
+            주로 LogManager.Start() 시점에
+            SinkGroup 및 전략 인스턴스 생성 계획을 세우기 위해 사용된다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.core.OutputRegistry.GetAllGroups">
+            <summary>
+            현재 등록된 모든 그룹 ID 목록을 반환한다.
+            </summary>
+            <returns>
+            중복 없는 모든 groupId 배열.
+            </returns>
+        </member>
+        <member name="T:LogLib.log.core.StrategyCacheKey">
+            <summary>
+            출력 전략 캐시에서 사용되는 키 값을 표현하는 값 타입이다.
+            </summary>
+            <remarks>
+            <para>
+            하나의 StrategyCacheKey는 (StrategyKind, groupId) 조합을 의미하며, <see cref="T:LogLib.log.core.StrategyPool"/> 내부 캐시에서 전략 인스턴스를 고유하게 식별하는 용도로 사용된다.
+            </para>
+            <para>
+            값 비교와 해시 기반 컬렉션(Dictionary Key)에 사용되므로 불변(immutable) 구조의 <c>readonly struct</c>로 설계되었다.
+            </para>
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.core.StrategyCacheKey.#ctor(LogLib.log.strategy.StrategyKind,System.Int32)">
+            <summary>
+            지정된 전략 종류와 그룹 ID로 캐시 키를 생성한다.
+            </summary>
+            <param name="kind">출력 전략 종류</param>
+            <param name="groupId">출력 그룹 ID</param>
+        </member>
+        <member name="P:LogLib.log.core.StrategyCacheKey.Kind">
+            <summary>
+            전략의 종류를 반환한다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.core.StrategyCacheKey.GroupId">
+            <summary>
+            전략이 소속된 그룹 ID를 반환한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.core.StrategyCacheKey.Equals(LogLib.log.core.StrategyCacheKey)">
+            <summary>
+            다른 StrategyCacheKey와의 값 동등성을 비교한다.
+            </summary>
+            <param name="other">비교 대상 StrategyCacheKey</param>
+            <returns>
+            Kind와 GroupId가 모두 동일하면 <c>true</c>, 그렇지 않으면 <c>false</c>
+            </returns>
+        </member>
+        <member name="M:LogLib.log.core.StrategyCacheKey.Equals(System.Object)">
+            <summary>
+            객체 단위의 동등성 비교를 수행한다.
+            </summary>
+            <param name="obj">비교 대상 객체</param>
+            <returns>
+            obj가 StrategyCacheKey이고 값이 동일하면 <c>true</c>, 아니면 <c>false</c>
+            </returns>
+        </member>
+        <member name="M:LogLib.log.core.StrategyCacheKey.GetHashCode">
+            <summary>
+            해시 기반 컬렉션 사용을 위한 해시 코드를 반환한다.
+            </summary>
+            <remarks>
+            Kind와 GroupId의 조합을 기반으로 해시를 생성하며, Equals 규약과 일관성을 유지한다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.core.StrategyCacheKey.ToString">
+            <summary>
+            디버깅 및 로그 출력을 위한 문자열 표현을 반환한다.
+            </summary>
+            <returns>
+            "Kind@group:GroupId" 형식의 문자열
+            </returns>
+        </member>
+        <member name="T:LogLib.log.core.StrategyPool">
+            <summary>
+            출력 전략(ILogOutputStrategy)을 (StrategyKind, groupId) 조합 단위로 캐싱하는 풀이다.
+            </summary>
+            <remarks>
+            <para>
+            동일한 StrategyKind와 groupId 조합에 대해 하나의 전략 인스턴스를 재사용함으로써 불필요한 객체 생성을 방지하고 전략의 일관된 사용을 보장한다.
+            </para>
+            <para>
+            내부 캐시는 스레드 안전하게 보호되며, 다중 스레드 환경에서도 동일 키에 대해 중복 생성이 발생하지 않는다.
+            </para>
+            </remarks>
+        </member>
+        <member name="F:LogLib.log.core.StrategyPool._lock">
+            <summary>
+            내부 캐시 보호를 위한 동기화 객체.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.core.StrategyPool._cache">
+            <summary>
+            (StrategyKind, groupId) → ILogOutputStrategy 캐시.
+            </summary>
+            <remarks>
+            <see cref="T:LogLib.log.core.StrategyCacheKey"/>를 키로 사용하여 전략 인스턴스를 단일하게 관리한다.
+            </remarks>
+        </member>
+        <member name="P:LogLib.log.core.StrategyPool.Count">
+            <summary>
+            현재 캐시에 저장된 전략 인스턴스의 개수를 반환한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.core.StrategyPool.GetOrCreate(LogLib.log.strategy.StrategyKind,System.Int32,LogLib.log.strategy.ILogStrategyFactory)">
+            <summary>
+            지정된 전략 종류와 그룹 ID에 대응하는 출력 전략을 반환한다.
+            </summary>
+            <param name="kind">출력 전략 종류</param>
+            <param name="groupId">출력 그룹 ID</param>
+            <param name="factory">
+            전략 인스턴스를 생성하기 위한 팩토리.
+            캐시에 없는 경우에만 사용된다.
+            </param>
+            <returns>
+            요청한 (kind, groupId)에 대응하는 <see cref="T:LogLib.log.strategy.ILogOutputStrategy"/> 인스턴스
+            </returns>
+            <exception cref="T:System.ArgumentNullException">
+            <paramref name="factory"/>가 <c>null</c>인 경우 발생한다.
+            </exception>
+            <exception cref="T:System.InvalidOperationException">
+            <para>팩토리가 <c>null</c> 전략을 반환한 경우</para>
+            </exception>
+            <remarks>
+            <para>
+            동일한 키에 대한 전략 인스턴스는 항상 하나만 생성되며, 이후 호출에서는 캐시된 인스턴스를 반환한다.
+            </para>
+            <para>
+            전략 생성 과정에서 예외가 발생하는 경우, 실패한 결과는 캐시에 저장되지 않는다.
+            따라서 다음 호출 시 다시 생성 시도가 이루어진다.
+            </para>
+            </remarks>
+        </member>
+        <member name="T:LogLib.log.ILogManager">
+            <summary>
+            로그 매니저 인터페이스.
+            로그 시스템의 생명주기 및 로그 출력을 관리한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.ILogManager.Start">
+            <summary>
+            로그 시스템을 시작한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.ILogManager.Stop">
+            <summary>
+            로그 시스템을 종료한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.ILogManager.Debug(System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            Debug 레벨 로그를 기록한다.
+            </summary>
+            <param name="message">로그 메시지</param>
+            <param name="meta">추가 메타데이터 (선택)</param>
+        </member>
+        <member name="M:LogLib.log.ILogManager.Info(System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            Info 레벨 로그를 기록한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.ILogManager.Warn(System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            Warn 레벨 로그를 기록한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.ILogManager.Error(System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            Error 레벨 로그를 기록한다.
+            </summary>
+        </member>
+        <member name="T:LogLib.log.LogManager">
+            <summary>
+            로그 라우팅/전략 바인딩/그룹별 비동기 싱크 처리를 총괄하는 로그 매니저이다.
+            LogLevel + StrategyKind + groupId 바인딩을 등록하고, Start 이후에는 바인딩을 잠가 실행 중 구성을 고정한다.
+            LogInternal 호출은 등록된 그룹(SinkGroup) 큐에 엔트리를 enqueue만 수행하며, 실제 출력은 SinkGroup 워커에서 처리된다.
+            Stop/Dispose 시 모든 그룹 워커를 정리하고 내부 상태를 초기화한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.LogManager.#ctor(LogLib.log.strategy.ILogStrategyFactory,System.Int32)">
+            <summary>
+            LogManager 인스턴스를 생성하고 그룹별 기본 큐 용량 및 전략 팩토리를 설정한다.
+            </summary>
+            <param name="factory">StrategyKind + groupId 조합에 대한 ILogOutputStrategy 생성(또는 재사용)을 제공하는 팩토리이다.</param>
+            <param name="defaultQueueCapacity">SinkGroup 내부 큐의 기본 capacity 값이며 0보다 커야 한다.</param>
+            <exception cref="T:System.ArgumentNullException">factory 가 null 인 경우 발생한다.</exception>
+            <exception cref="T:System.ArgumentOutOfRangeException">defaultQueueCapacity 가 0 이하인 경우 발생한다.</exception>
+        </member>
+        <member name="P:LogLib.log.LogManager.IsStarted">
+            <summary>
+            로깅 시스템이 현재 시작 상태인지 여부를 반환한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.LogManager.AddOutput(LogLib.log.model.LogLevel,LogLib.log.strategy.StrategyKind,System.Int32)">
+            <summary>
+            특정 LogLevel 을 지정된 StrategyKind 및 groupId 로 라우팅하도록 출력 바인딩을 추가한다.
+            중복 규칙(LogLevel + StrategyKind + groupId)이 위반되면 바인딩은 추가되지 않는다.
+            (kind, groupId) 단위로 StrategyPool 을 통해 전략 인스턴스를 생성/재사용하고, 그룹별 전략 목록에 중복 없이 바인딩한다.
+            </summary>
+            <exception cref="T:System.InvalidOperationException">Start 이후 또는 레지스트리 잠금 이후에 호출되면 발생한다.</exception>
+        </member>
+        <member name="M:LogLib.log.LogManager.Start">
+            <summary>
+            로깅 시스템을 시작한다.
+            모든 등록된 그룹에 대해 SinkGroup을 생성하고 출력 전략을 적용하여
+            로그 처리를 활성화한다.
+            이미 시작된 상태에서는 아무 동작도 수행하지 않는다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.LogManager.Stop">
+            <summary>
+            로깅 시스템을 중지하고 모든 SinkGroup을 정리한다.
+            내부 그룹을 안전하게 분리한 후 각 그룹의 처리를 중단하고 리소스를 해제한다.
+            시작되지 않은 상태이며 레지스트리가 잠겨있지 않은 경우에는 아무 동작도 수행하지 않는다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.LogManager.LogInternal(LogLib.log.model.LogLevel,System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            공통 로그 기록 처리 메서드.
+            로그 레벨에 따라 대상 SinkGroup을 선택하여 로그 엔트리를 큐에 전달한다.
+            로깅 시스템이 시작되지 않은 경우에는 아무 동작도 수행하지 않는다.
+            </summary>
+            <param name="level">로그 레벨</param>
+            <param name="message">로그 메시지</param>
+            <param name="meta">추가 메타데이터(키-값). 없으면 <c>null</c>.</param>
+        </member>
+        <member name="M:LogLib.log.LogManager.Debug(System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            디버그 레벨 로그를 기록한다.
+            </summary>
+            <param name="message">로그 메시지</param>
+            <param name="meta">추가 메타데이터(키-값). 없으면 <c>null</c>.</param>
+        </member>
+        <member name="M:LogLib.log.LogManager.Info(System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            정보 레벨 로그를 기록한다.
+            </summary>
+            <param name="message">로그 메시지</param>
+            <param name="meta">추가 메타데이터(키-값). 없으면 <c>null</c>.</param>
+        </member>
+        <member name="M:LogLib.log.LogManager.Warn(System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            경고 레벨 로그를 기록한다.
+            </summary>
+            <param name="message">로그 메시지</param>
+            <param name="meta">추가 메타데이터(키-값). 없으면 <c>null</c>.</param>
+        </member>
+        <member name="M:LogLib.log.LogManager.Error(System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            오류 레벨 로그를 기록한다.
+            </summary>
+            <param name="message">로그 메시지</param>
+            <param name="meta">추가 메타데이터(키-값). 없으면 <c>null</c>.</param>
+        </member>
+        <member name="M:LogLib.log.LogManager.GettimeStamp">
+            <summary>
+            POSIX(Unix epoch) 기준 밀리초(ms) 타임스탬프를 반환한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.LogManager.Dispose">
+            <summary>
+            사용 중인 리소스를 해제한다.
+            내부적으로 <see cref="M:LogLib.log.LogManager.Stop"/>을 호출하여 로깅 시스템을 중지하고 정리한다.
+            </summary>
+        </member>
+        <member name="T:LogLib.log.model.LogEntry">
+            <summary>
+            하나의 로그 이벤트를 표현하는 불변(immutable) 로그 엔트리 모델이다.
+            </summary>
+            <remarks>
+            <para>
+            LogEntry는 로그 호출 시점의 정보를 캡슐화한 이벤트 객체로, SinkGroup 내부 큐를 통해 비동기적으로 전달되고 출력 전략에 의해 소비된다.
+            </para>
+            <para>
+            값 비교가 중요한 Value Object가 아니라, 동일 인스턴스가 여러 출력 그룹으로 전달되는 메시지(Event) 성격의 객체이므로 참조 타입(class)으로 설계되었다.
+            </para>
+            <para>
+            모든 프로퍼티는 생성 시점에만 설정되며 이후 변경되지 않는다.
+            단, <see cref="P:LogLib.log.model.LogEntry.Meta"/>에 전달되는 컬렉션 자체의 변경 가능성까지는 내부적으로 방어하지 않는다.
+            </para>
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.model.LogEntry.#ctor(System.Int64,LogLib.log.model.LogLevel,System.String,System.Collections.Generic.IReadOnlyDictionary{System.String,System.String})">
+            <summary>
+            LogEntry 인스턴스를 생성한다.
+            </summary>
+            <param name="timeStamp">
+            POSIX(Unix epoch, UTC) 기준의 밀리초(ms) 타임스탬프이며 1 이상의 값이어야 한다.
+            </param>
+            <param name="level">로그의 심각도(LogLevel)이다.</param>
+            <param name="message">로그 메시지 문자열이며 null 일 수 없다.</param>
+            <param name="meta">선택적 메타데이터(키-값) 컬렉션이다.</param>
+            <exception cref="T:System.ArgumentOutOfRangeException">
+            <paramref name="timeStamp"/>가 1 미만인 경우 발생한다.
+            </exception>
+            <exception cref="T:System.ArgumentNullException">
+            <paramref name="message"/>가 null 인 경우 발생한다.
+            </exception>
+        </member>
+        <member name="P:LogLib.log.model.LogEntry.TimeStamp">
+            <summary>
+            로그가 생성된 시점의 타임스탬프이다.
+            </summary>
+            <remarks>
+            POSIX(Unix epoch, UTC) 기준의 밀리초(ms) 값이다.
+            </remarks>
+        </member>
+        <member name="P:LogLib.log.model.LogEntry.Level">
+            <summary>
+            로그의 심각도 레벨이다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.model.LogEntry.Message">
+            <summary>
+            로그 메시지 본문이다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.model.LogEntry.Meta">
+            <summary>
+            로그에 부가적으로 포함되는 메타데이터 컬렉션이다.
+            </summary>
+            <remarks>
+            읽기 전용 인터페이스로 노출되지만, 전달된 컬렉션의 내부 변경까지 방어하지는 않는다.
+            </remarks>
+        </member>
+        <member name="T:LogLib.log.model.LogLevel">
+            <summary>
+            로그 메시지의 중요도 또는 심각도를 나타내는 열거형이다.
+            값이 클수록 더 높은 심각도를 의미한다.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.model.LogLevel.Debug">
+            <summary>
+            디버깅 목적의 상세 로그이며, 개발 단계에서 주로 사용된다.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.model.LogLevel.Info">
+            <summary>
+            일반적인 정보성 로그이며 정상 동작 흐름을 기록한다.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.model.LogLevel.Warn">
+            <summary>
+            잠재적 문제 상황을 알리는 경고 로그이다.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.model.LogLevel.Error">
+            <summary>
+            오류 상황을 나타내며 즉각적인 확인이 필요한 로그이다.
+            </summary>
+        </member>
+        <member name="T:LogLib.log.runtime.BoundedLogQueue`1">
+            <summary>
+            로그 파이프라인 내부에서 사용되는 고정 용량(thread-safe) FIFO 큐이다.
+            </summary>
+            <remarks>
+            <para>
+            이 큐는 최대 용량(<see cref="P:LogLib.log.runtime.BoundedLogQueue`1.Capacity"/>)을 초과하여 Enqueue가 호출되면, 가장 오래된 항목을 제거(drop oldest)하고 최신 항목을 유지(keep newest)하는 정책을 사용한다.
+            </para>
+            <para>
+            본 큐는 내부적으로 lock을 사용하여 스레드 안전성을 제공하지만, 비어 있을 때 대기(blocking)하거나 신호를 제공하는 기능은 없다.
+            따라서 소비(Dequeue) 측의 대기/폴링 정책은 외부(예: SinkGroup 워커 루프)에서 결정한다.
+            </para>
+            <para>
+            용량 초과 시 항목 유실은 정상 동작이며, 유실(드롭) 횟수는 <see cref="P:LogLib.log.runtime.BoundedLogQueue`1.DroppedCount"/>로 누적 집계된다.
+            </para>
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.runtime.BoundedLogQueue`1.#ctor(System.Int32)">
+            <summary>
+            지정된 용량을 가지는 <see cref="T:LogLib.log.runtime.BoundedLogQueue`1"/> 인스턴스를 생성한다.
+            </summary>
+            <param name="capacity">큐가 저장할 수 있는 최대 항목 수이며 0보다 커야 한다.</param>
+            <exception cref="T:System.ArgumentOutOfRangeException">
+            <paramref name="capacity"/>가 0 이하인 경우 발생한다.
+            </exception>
+        </member>
+        <member name="P:LogLib.log.runtime.BoundedLogQueue`1.Capacity">
+            <summary>
+            큐의 최대 저장 용량을 반환한다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.runtime.BoundedLogQueue`1.DroppedCount">
+            <summary>
+            용량 초과로 인해(가득 찬 상태에서 Enqueue가 호출되어) 제거된 항목의 누적 횟수를 반환한다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.runtime.BoundedLogQueue`1.Count">
+            <summary>
+            현재 큐에 저장된 항목 수를 반환한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.runtime.BoundedLogQueue`1.Enqueue(`0)">
+            <summary>
+            항목을 큐에 추가한다.
+            </summary>
+            <remarks>
+            큐가 가득 찬 경우 가장 오래된 항목 하나를 먼저 제거한 뒤 새 항목을 추가한다.
+            이 동작은 "최신 항목 유지" 정책에 따른 정상 동작이며, 제거가 발생하면 <see cref="P:LogLib.log.runtime.BoundedLogQueue`1.DroppedCount"/>가 증가한다.
+            </remarks>
+            <param name="item">큐에 추가할 항목이다.</param>
+            <returns>
+            Enqueue 전에 용량 초과로 제거(drop)가 발생했으면 <c>true</c>, 그렇지 않으면 <c>false</c>를 반환한다.
+            </returns>
+        </member>
+        <member name="M:LogLib.log.runtime.BoundedLogQueue`1.TryDequeue(`0@)">
+            <summary>
+            큐의 가장 오래된 항목을 제거하고 반환한다.
+            </summary>
+            <param name="item">제거된 항목이 저장될 출력 변수이다.</param>
+            <returns>
+            항목이 존재하여 성공적으로 제거되면 <c>true</c>, 큐가 비어 있으면 <c>false</c>를 반환한다.
+            </returns>
+            <remarks>
+            <c>false</c>를 반환하는 경우 <paramref name="item"/>에는 <c>default(T)</c>가 설정된다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.runtime.BoundedLogQueue`1.Clear">
+            <summary>
+            큐에 저장된 모든 항목을 제거한다.
+            </summary>
+            <remarks>
+            이 메서드는 큐의 내용만 비우며, 누적 유실 카운트(<see cref="P:LogLib.log.runtime.BoundedLogQueue`1.DroppedCount"/>)는 초기화하지 않는다.
+            </remarks>
+        </member>
+        <member name="T:LogLib.log.runtime.SinkGroup">
+            <summary>
+            하나의 출력 그룹(groupId)에 대한 비동기 로그 처리 단위이다.
+            </summary>
+            <remarks>
+            <para>
+            SinkGroup은 로그 엔트리를 내부 큐에 적재한 뒤, 전용 워커 스레드에서 배치 단위로 출력 전략(<see cref="T:LogLib.log.strategy.ILogOutputStrategy"/>)에 전달한다.
+            </para>
+            <para>
+            그룹 단위로 ordering(순서)을 보장하며, 그룹에 속한 모든 전략은 동일한 로그 배치를 동일한 순서로 전달받는다.
+            </para>
+            <para>
+            본 클래스는 유실 허용(lossy) 설계를 전제로 하며, 큐 초과, Stop 시점, 전략 실행 실패에 대해 재시도나 flush를 보장하지 않는다.
+            </para>
+            </remarks>
+        </member>
+        <member name="F:LogLib.log.runtime.SinkGroup._lock">
+            <summary>
+            SinkGroup의 라이프사이클(Start/Stop) 상태 보호를 위한 동기화 객체.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.runtime.SinkGroup._queue">
+            <summary>
+            로그 엔트리를 임시로 저장하는 고정 용량 큐.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.runtime.SinkGroup._strategies">
+            <summary>
+            이 그룹에 바인딩된 출력 전략 목록.
+            </summary>
+            <remarks>
+            Start 이후에는 변경되지 않으며, 워커 스레드에서만 순차적으로 접근된다.
+            </remarks>
+        </member>
+        <member name="F:LogLib.log.runtime.SinkGroup._worker">
+            <summary>
+            로그 처리를 담당하는 워커 스레드.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.runtime.SinkGroup._cts">
+            <summary>
+            워커 스레드 종료를 요청하기 위한 취소 토큰 소스.
+            </summary>
+        </member>
+        <member name="F:LogLib.log.runtime.SinkGroup._started">
+            <summary>
+            SinkGroup이 시작(Start) 상태인지 여부.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.runtime.SinkGroup.#ctor(System.Int32,System.Int32,System.Collections.Generic.IEnumerable{LogLib.log.strategy.ILogOutputStrategy})">
+            <summary>
+            지정된 그룹 ID, 큐 용량, 출력 전략 집합으로 SinkGroup을 생성한다.
+            </summary>
+            <param name="groupId">출력 그룹 ID</param>
+            <param name="capacity">내부 큐의 최대 용량이며 0보다 커야 한다.</param>
+            <param name="strategies">이 그룹에 적용될 출력 전략 집합</param>
+            <exception cref="T:System.ArgumentOutOfRangeException">
+            <paramref name="capacity"/>가 0 이하인 경우 발생한다.
+            </exception>
+            <exception cref="T:System.ArgumentNullException">
+            <paramref name="strategies"/>가 null 인 경우 발생한다.
+            </exception>
+        </member>
+        <member name="P:LogLib.log.runtime.SinkGroup.GroupId">
+            <summary>
+            이 SinkGroup이 담당하는 출력 그룹 ID이다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.runtime.SinkGroup.DroppedCount">
+            <summary>
+            큐 용량 초과로 인해 유실(drop)된 로그 엔트리의 누적 개수를 반환한다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.runtime.SinkGroup.QueueCount">
+            <summary>
+            현재 큐에 대기 중인 로그 엔트리 개수를 반환한다.
+            </summary>
+        </member>
+        <member name="M:LogLib.log.runtime.SinkGroup.Start">
+            <summary>
+            SinkGroup의 로그 처리를 시작한다.
+            </summary>
+            <remarks>
+            내부 워커 스레드를 생성하여 로그 큐를 소비하기 시작한다.
+            이미 시작된 상태에서 호출되면 아무 동작도 수행하지 않는다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.runtime.SinkGroup.Stop">
+            <summary>
+            SinkGroup의 로그 처리를 중지한다.
+            </summary>
+            <remarks>
+            워커 스레드에 취소를 요청하고 종료될 때까지 대기한다.
+            잔여 큐에 남아 있는 로그 엔트리는 처리되지 않고 유실될 수 있다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.runtime.SinkGroup.TryEnqueue(LogLib.log.model.LogEntry)">
+            <summary>
+            로그 엔트리를 이 SinkGroup의 큐에 추가한다.
+            </summary>
+            <param name="entry">큐에 추가할 로그 엔트리</param>
+            <returns>
+            SinkGroup이 시작된 상태이면 <c>true</c>,
+            시작되지 않았거나 이미 중지된 상태이면 <c>false</c>를 반환한다.
+            </returns>
+            <remarks>
+            <para>
+            반환값이 <c>true</c>라고 해서 로그가 반드시 출력되는 것을 보장하지는 않는다.
+            Stop과의 경쟁 상태에서는 큐에 추가되었더라도 워커가 종료되어 소비되지 않을 수 있다.
+            </para>
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.runtime.SinkGroup.WorkerLoop(System.Threading.CancellationToken)">
+            <summary>
+            워커 스레드에서 실행되는 로그 소비 루프이다.
+            </summary>
+            <param name="ct">워커 종료를 요청하기 위한 취소 토큰</param>
+            <remarks>
+            <para>
+            큐에서 로그 엔트리를 최대 배치 크기만큼 가져와 모든 출력 전략에 동일한 순서로 전달한다.
+            </para>
+            <para>
+            큐가 비어 있는 경우 짧은 시간 동안 sleep 하여 과도한 CPU 사용을 방지한다.
+            </para>
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.runtime.SinkGroup.Dispose">
+            <summary>
+            SinkGroup에서 사용 중인 리소스를 해제한다.
+            </summary>
+            <remarks>
+            내부적으로 <see cref="M:LogLib.log.runtime.SinkGroup.Stop"/>을 호출하여 워커 스레드를 중지한다.
+            </remarks>
+        </member>
+        <member name="T:LogLib.log.strategy.CreateContext">
+            <summary>
+            ILogStrategyFactory 에서 로그 출력 전략을 생성할 때 전달되는 생성 컨텍스트 정보를 하나로 묶은 불변 데이터 객체이다.
+            </summary>
+            <remarks>
+            StrategyKind 와 groupId 를 개별 인자로 전달하지 않고, 하나의 컨텍스트 객체로 전달함으로써 팩토리 인터페이스 확장성과 가독성을 높이기 위한 목적이다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.strategy.CreateContext.#ctor(LogLib.log.strategy.StrategyKind,System.Int32)">
+            <summary>
+            지정된 전략 종류와 그룹 식별자를 포함하는 CreateContext 를 생성한다.
+            </summary>
+            <param name="kind">생성할 로그 출력 전략의 종류이다.</param>
+            <param name="groupId">전략이 바인딩될 그룹 식별자이다.</param>
+        </member>
+        <member name="P:LogLib.log.strategy.CreateContext.Kind">
+            <summary>
+            생성할 로그 출력 전략의 종류를 반환한다.
+            </summary>
+        </member>
+        <member name="P:LogLib.log.strategy.CreateContext.GroupId">
+            <summary>
+            전략이 소속될 그룹 식별자를 반환한다.
+            </summary>
+        </member>
+        <member name="T:LogLib.log.strategy.ILogOutputStrategy">
+            <summary>
+            로그 출력 방식을 정의하는 전략 인터페이스
+            (파일, 콘솔, DB, 네트워크 등 다양한 출력 방식에 대한 공통 계약)
+            </summary>
+        </member>
+        <member name="M:LogLib.log.strategy.ILogOutputStrategy.Write(LogLib.log.model.LogEntry)">
+            <summary>
+            로그 엔트리를 지정된 출력 매체로 기록한다.
+            </summary>
+            <param name="entry">출력할 로그 정보 객체</param>
+            <returns>
+            true: 커밋 성공(큐에서 제거 가능)
+            false: 커밋 실패(큐에서 제거하면 안 됨)
+            </returns>
+        </member>
+        <member name="M:LogLib.log.strategy.ILogOutputStrategy.WriteBatch(System.Collections.Generic.IReadOnlyList{LogLib.log.model.LogEntry})">
+            <summary>
+            여러 개의 로그 엔트리를 지정된 출력 매체로 일괄 기록한다.
+            </summary>
+            <param name="entries">출력할 로그 정보 객체 컬렉션</param>
+            <returns>
+            true: 커밋 성공(큐에서 제거 가능)
+            false: 커밋 실패(큐에서 제거하면 안 됨)
+            </returns>
+        </member>
+        <member name="T:LogLib.log.strategy.ILogStrategyFactory">
+            <summary>
+            로그 출력 전략(ILogOutputStrategy)을 생성하는 팩토리 인터페이스이다.
+            </summary>
+            <remarks>
+            전략 생성에 필요한 모든 입력 정보는 CreateContext 로 전달되며, 이를 통해 팩토리 구현체는 전략 종류, 그룹 식별자 등 다양한 조건에 따라 적절한 출력 전략 인스턴스를 생성하거나 재사용할 수 있다.
+            </remarks>
+        </member>
+        <member name="M:LogLib.log.strategy.ILogStrategyFactory.Create(LogLib.log.strategy.CreateContext)">
+            <summary>
+            지정된 생성 컨텍스트를 기반으로 로그 출력 전략 인스턴스를 생성하거나 반환한다.
+            </summary>
+            <param name="ctx">전략 생성에 필요한 정보를 담고 있는 생성 컨텍스트이다.</param>
+            <returns>ILogOutputStrategy 를 구현한 로그 출력 전략 인스턴스를 반환한다.</returns>
+        </member>
+        <member name="T:LogLib.log.strategy.StrategyKind">
+            <summary>
+            로그 출력 전략의 종류를 정의하는 열거형
+            </summary>
+        </member>
+        <member name="F:LogLib.log.strategy.StrategyKind.Console">
+            <summary>
+            콘솔 출력 전략
+            </summary>
+        </member>
+        <member name="F:LogLib.log.strategy.StrategyKind.FileHourly">
+            <summary>
+            시간 단위로 분리되는 파일 출력 전략 (매 시간마다 파일 생성)
+            </summary>
+        </member>
+        <member name="F:LogLib.log.strategy.StrategyKind.FileDaily">
+            <summary>
+            일 단위로 분리되는 파일 출력 전략 (매일 파일 생성)
+            </summary>
+        </member>
+        <member name="F:LogLib.log.strategy.StrategyKind.Zmq">
+            <summary>
+            ZeroMQ 기반 네트워크 전송 출력 전략
+            </summary>
+        </member>
+    </members>
+</doc>
