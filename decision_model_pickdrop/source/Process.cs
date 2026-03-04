@@ -61,25 +61,21 @@ public partial class Process : IDisposable
     // 센서(라이다 or 거리센서)로 측정한 물류와 거리
     private int _Target_distance_mm = 0;
 
-    // 태블릿에서 유사도 분석 수행 후 Complete 를 전송한 시각
+    // 태블릿에서 유사도 분석 수행 후 Complete 를 전송한 시각 & Complete 플래그
     private DateTime _scan_complete_time = DateTime.MinValue;
-
-    // 태블릿에서 유사도 분석 수행 후 결과
     private bool _scan_complete = false;
 
-    // Pickup 판단 시작 시간 (중량 체크를 위한 준비)
+    // Pickup 판단 시작 시간 & 플래그 (중량 체크를 위한 준비)
     private DateTime _pickup_candidate_starttime = DateTime.MinValue;
-
-    // Pickup 판단 시작 알림 (중량 체크를 위한 준비)
     private bool _pickup_cantidate_active = false;
 
     private double _stable_height_mm = 0.0;
-    private bool _height_is_stable = false;
     private DateTime _height_stability_start_time_utc = DateTime.MinValue;
+    private bool _height_is_stable = false;
 
-    private bool _ocr_triggered_by_height_stability = false;
     private DateTime _last_height_ocr_trigger_time_utc = DateTime.MinValue;
-    
+    private bool _ocr_triggered_by_height_stability = false;
+
     public Process()
     {
         _log = CreateLogManager();
@@ -347,252 +343,275 @@ public partial class Process : IDisposable
 // =========================
     private void Working()
     {
-        var ForkHeightThreshold = _config!.App.ForkHeightThresholdmm;
-        var TargetDistanceThreshold = _config.App.TargetDistanceThresholdmm;
-
-        CMD command = _current_command_value;
-
-        var CameraPickState = _cam_pick_state;
-        var LiDARPickState = _lidar_pick_state;
-
-        var ForkHeight = _fork_height_mm;
-        var ForkFoward = _fork_forward_mm; // 현재 규칙에는 직접 사용 안 함(유지)
-        var TargetDistance = _Target_distance_mm;
-
-        var ScanCompleteTime = _scan_complete_time;
-        var ScanComplete = _scan_complete;
-
-        var PickupCandidateStartTime = _pickup_candidate_starttime;
-        var PickupCandidateActive = _pickup_cantidate_active;
+        // ========== Parameter Capture ==========
+        var forkHeightThreshold = _config!.App.ForkHeightThresholdmm;
+        var targetDistanceThreshold = _config.App.TargetDistanceThresholdmm;
 
         var nowUtc = DateTime.UtcNow;
 
-        // =========================
-        // 0) pickup / drop 신호 계산
-        // =========================
-        bool pickupSignal = false;
-        bool dropSignal = false;
+        var command = _current_command_value;
 
-        if (ForkHeight >= ForkHeightThreshold)
+        var cameraPickState = _cam_pick_state;
+        var lidarPickState = _lidar_pick_state;
+
+        double forkHeight = _fork_height_mm;
+        double forkForward = _fork_forward_mm; // 현재 규칙에는 직접 사용 안 함(유지)
+        double targetDistance = _Target_distance_mm;
+
+        var scanCompleteTime = _scan_complete_time;
+        var scanComplete = _scan_complete;
+
+        var pickupCandidateStartTime = _pickup_candidate_starttime;
+        var pickupCandidateActive = _pickup_cantidate_active;
+
+        // ========== 0) pickup/drop 신호 계산 ==========
+        var signals = CalcSignals(forkHeight, forkHeightThreshold, cameraPickState, lidarPickState);
+        var pickupSignal = signals.pickup;
+        var dropSignal = signals.drop;
+
+        // ========== 1) Drop / Pickup 결정 ==========
+        HandleDropOrPickup();
+
+        // ========== 2) OCR_START 결정 (거리 기반 / 높이 안정화 기반) ==========
+        HandleOcrStart();
+
+        // ========== 3) OCR_COMPLETE 결정 ==========
+        HandleOcrComplete();
+
+        // ========== 4) Parameter Update / Publish ==========
+        _pickup_cantidate_active = pickupCandidateActive;
+        _pickup_candidate_starttime = pickupCandidateStartTime;
+
+        if (_current_command_value != command)
         {
-            // 포크 높음(>=): 카메라 단독
-            pickupSignal = CameraPickState;
-            dropSignal = !CameraPickState;
+            _current_command_value = command;
+            PublishCommand(command);
         }
-        else
+
+        // ------------------------------------------------------------------
+        // Local functions
+        // ------------------------------------------------------------------
+
+        static (bool pickup, bool drop) CalcSignals(double forkHeight, double forkHeightThreshold, bool cameraPickState, bool lidarPickState)
         {
+            if (forkHeight >= forkHeightThreshold)
+            {
+                // 포크 높음(>=): 카메라 단독
+                return (pickup: cameraPickState, drop: !cameraPickState);
+            }
+
             // 포크 낮음(<): pickup=라이다&&카메라, drop=라이다 단독(false)
-            pickupSignal = LiDARPickState && CameraPickState;
-            dropSignal = !LiDARPickState;
+            return (pickup: lidarPickState && cameraPickState, drop: !lidarPickState);
         }
 
-        // ==========================================
-        // 2) drop 우선 처리: drop이면 즉시 0 + 후보 취소
-        // ==========================================
-        if (dropSignal)
+        void HandleDropOrPickup()
         {
-            command = CMD.DROP;
-
-            if (PickupCandidateActive)
-                PickupCandidateActive = false;
-        }
-        // ==========================================
-        // 3) pickup 확정 처리: "즉시 3 금지" -> 후보 상태로 대기 후 확정
-        //      Drop-Signal (x) & Pickup-Signal (o) & CMD.PICKUP != Current-CMD
-        // ==========================================
-        else if (CMD.PICKUP != command && pickupSignal)
-        {
-            // 후보 진입
-            if (!PickupCandidateActive)
+            // 2) drop 우선 처리: drop이면 즉시 0 + 후보 취소
+            if (dropSignal)
             {
-                PickupCandidateActive = true;
-                PickupCandidateStartTime = nowUtc;
+                command = CMD.DROP;
+                pickupCandidateActive = false;
+                return;
             }
 
-            // 중량 센서 입력이 신선해야 안정화 판단이 의미 있음(권장)
-            bool weightFresh = IsWeightInputFresh(nowUtc);
-            bool weightStable = IsWeightStableAndAboveMinKg(PickupCandidateStartTime, nowUtc);
-
-            // 안정 중량 조건 만족 -> 3 확정
-            if (weightFresh && weightStable)
+            // 3) pickup 확정 처리: "즉시 3 금지" -> 후보 상태로 대기 후 확정
+            if (command != CMD.PICKUP && pickupSignal)
             {
-                command = CMD.PICKUP;
-                PickupCandidateActive = false;
-            }
-            // 타임아웃 예외 확정(원본은 10초)
-            else if (nowUtc - PickupCandidateStartTime >= TimeSpan.FromSeconds(10))
-            {
-                // 원본은 "중량=-1"로 확정했음.
-                // 여기서는 command=3만 확정하고, weight 유효성은 별도 플래그로 기록하는 걸 권장.
-                command = CMD.PICKUP;
-                PickupCandidateActive = false;
+                EnterPickupCandidateIfNeeded();
 
-                // 예: _pickup_confirmed_without_weight = true; 같은 플래그를 두고 기록 가능
-            }
-        }
-        // ==========================================
-        // 3-1) Pickup/Drop 모두 아닐 경우 Pickup 후보 상태 해제
-        //      Drop-Signal (x) & Pickup-Signal (x) & CMD.PICKUP != Current-CMD
-        // ==========================================
-        else if (CMD.PICKUP != command && !pickupSignal)
-        {
-            // pickup이 꺼졌으면 후보 취소(확정 전)
-            if (PickupCandidateActive)
-            {
-                PickupCandidateActive = false;
-            }
-        }
+                bool weightFresh = IsWeightInputFresh(nowUtc);
+                bool weightStable = IsWeightStableAndAboveMinKg(pickupCandidateStartTime, nowUtc);
 
-        // ==========================================
-        // 4) OCR_START 트리거 / 리셋
-        //    - 거리 기반: 포크 낮음(<)에서만
-        //    - 높이 안정화 기반(3초 재트리거): 포크 높음(>=)에서만
-        //
-        // 원본 규칙(중요):
-        // - command==2 또는 3이면 OCR_START 자체를 차단
-        // - OCR_START는 command==1 상태에서도 재발행될 수 있음
-        // - command를 1로 올리는 건 command==0일 때만
-        // ==========================================
-        bool blockOcrStart = (CMD.OCR_COMPLETE == command) || (CMD.PICKUP == command);
-
-        if (ForkHeight < ForkHeightThreshold)
-        {
-            // ---- 거리(X) 기반 ----
-            // 포크가 낮아지면 높이 안정화 상태 리셋(원본 reset_height_stability)
-            _height_is_stable = false;
-            _ocr_triggered_by_height_stability = false;
-            _stable_height_mm = 0.0;
-            _height_stability_start_time_utc = DateTime.MinValue;
-            _last_height_ocr_trigger_time_utc = DateTime.MinValue;
-
-            if (!blockOcrStart)
-            {
-                // 0에서만 OCR_START 시도
-                if (CMD.DROP == command &&
-                    TargetDistance > 0 &&
-                    TargetDistance <= TargetDistanceThreshold)
+                if (weightFresh && weightStable)
                 {
-                    SendOcrStart(); // "OCR_START" 전송
+                    ConfirmPickup();
+                    return;
+                }
+
+                // 타임아웃 예외 확정(원본은 10초)
+                if (nowUtc - pickupCandidateStartTime >= TimeSpan.FromSeconds(10))
+                {
+                    ConfirmPickup();
+                    // 예: _pickup_confirmed_without_weight = true;
+                    return;
+                }
+
+                return; // 후보 유지
+            }
+
+            // 3-1) Pickup/Drop 모두 아닐 경우 Pickup 후보 상태 해제
+            if (command != CMD.PICKUP && !pickupSignal)
+            {
+                pickupCandidateActive = false;
+            }
+
+            void EnterPickupCandidateIfNeeded()
+            {
+                if (pickupCandidateActive) return;
+                pickupCandidateActive = true;
+                pickupCandidateStartTime = nowUtc;
+            }
+
+            void ConfirmPickup()
+            {
+                command = CMD.PICKUP;
+                pickupCandidateActive = false;
+            }
+        }
+
+        void HandleOcrStart()
+        {
+            // 원본 규칙:
+            // - command==2 또는 3이면 OCR_START 차단
+            // - OCR_START는 command==1 상태에서도 재발행될 수 있음
+            // - command를 1로 올리는 건 command==0일 때만
+            bool blockOcrStart = (command == CMD.OCR_COMPLETE) || (command == CMD.PICKUP);
+
+            if (forkHeight < forkHeightThreshold)
+            {
+                ResetHeightStabilityState(); // 포크가 낮아지면 높이 안정화 상태 리셋
+                HandleDistanceBasedOcr(blockOcrStart);
+                return;
+            }
+
+            HandleHeightStabilityOcr(blockOcrStart);
+
+            void ResetHeightStabilityState()
+            {
+                _height_is_stable = false;
+                _ocr_triggered_by_height_stability = false;
+                _stable_height_mm = 0.0;
+                _height_stability_start_time_utc = DateTime.MinValue;
+                _last_height_ocr_trigger_time_utc = DateTime.MinValue;
+            }
+
+            void HandleDistanceBasedOcr(bool blocked)
+            {
+                if (blocked)
+                    return;
+
+                // 0에서만 OCR_START 시도
+                if (command == CMD.DROP &&
+                    targetDistance > 0 &&
+                    targetDistance <= targetDistanceThreshold)
+                {
+                    SendOcrStart();
                     command = CMD.OCR_START;
+                    // 일부러 return 안 함: 아래 "멀어지면 0으로" 체크도 수행하도록
                 }
 
                 // 1 상태에서 목표가 멀어지면 0으로 내려서 재트리거 가능하게
-                if (CMD.OCR_START == command &&
-                    TargetDistance > TargetDistanceThreshold)
+                if (command == CMD.OCR_START &&
+                    targetDistance > targetDistanceThreshold)
                 {
                     command = CMD.DROP;
                 }
             }
-        }
-        else // ForkHeight >= ForkHeightThreshold
-        {
-            // ---- 높이 안정화 기반 (3초 재트리거) ----
-            if (!blockOcrStart)
+
+            void HandleHeightStabilityOcr(bool blocked)
             {
-                // 설정값이 없다면 우선 상수로 두고, 추후 config로 빼면 됨
-                double toleranceMm = 20.0; // height_stability_tolerance_mm_
-                double stableDurationSec = 0.5; // height_stability_duration_sec_
-                double retriggerIntervalSec = 3.0; // height_ocr_retrigger_interval_sec_
-
-                double heightDiff = Math.Abs(ForkHeight - _stable_height_mm);
-
-                if (heightDiff <= toleranceMm)
+                // ---- 높이 안정화 기반 (3초 재트리거) ----
+                if (blocked)
                 {
-                    if (!_height_is_stable)
-                    {
-                        // 안정화 시작
-                        _height_is_stable = true;
-                        _stable_height_mm = ForkHeight;
-                        _height_stability_start_time_utc = nowUtc;
-                    }
-                    else
-                    {
-                        // 안정화 지속 시간 체크
-                        double stableSeconds = (nowUtc - _height_stability_start_time_utc).TotalSeconds;
-
-                        if (stableSeconds >= stableDurationSec)
-                        {
-                            if (!_ocr_triggered_by_height_stability)
-                            {
-                                // 첫 트리거
-                                SendOcrStart();
-                                _ocr_triggered_by_height_stability = true;
-                                _last_height_ocr_trigger_time_utc = nowUtc;
-
-                                // command==0일 때만 1로 올림 (원본과 동일)
-                                if (CMD.DROP == command)
-                                {
-                                    command = CMD.OCR_START;
-                                }
-                            }
-                            else
-                            {
-                                // 재트리거: 마지막 트리거 이후 N초 경과 시
-                                double sinceLastSec = (nowUtc - _last_height_ocr_trigger_time_utc).TotalSeconds;
-
-                                if (sinceLastSec >= retriggerIntervalSec)
-                                {
-                                    SendOcrStart();
-                                    _last_height_ocr_trigger_time_utc = nowUtc;
-
-                                    // command==0이면 1로 올림, command==1이면 유지
-                                    if (CMD.DROP == command)
-                                    {
-                                        command = CMD.OCR_START;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    // 높이 변화 감지 → 안정화 깨짐
+                    _ocr_triggered_by_height_stability = false;
                     _height_is_stable = false;
-                    _stable_height_mm = ForkHeight;
+                    return;
+                }
+
+                const double toleranceMm = 20.0;
+                const double stableDurationSec = 0.5;
+                const double retriggerIntervalSec = 3.0;
+
+                double heightDiff = Math.Abs(forkHeight - _stable_height_mm);
+
+                if (heightDiff > toleranceMm)
+                {
+                    BreakStabilityBecauseHeightChanged();
+                    return;
+                }
+
+                if (!_height_is_stable)
+                {
+                    StartStability();
+                    return;
+                }
+
+                if (!HasBeenStableLongEnough())
+                    return;
+
+                if (!_ocr_triggered_by_height_stability)
+                {
+                    TriggerOcrStartIfNeeded();
+                    _ocr_triggered_by_height_stability = true;
+                    return;
+                }
+
+                if (IsRetriggerDue())
+                {
+                    TriggerOcrStartIfNeeded();
+                }
+
+                // --- helpers inside height stability ---
+                void BreakStabilityBecauseHeightChanged()
+                {
+                    _height_is_stable = false;
+                    _stable_height_mm = forkHeight;
                     _height_stability_start_time_utc = nowUtc;
 
-                    // 원본 의미: 높이 기반 OCR을 이미 쏜 상태인데(ocr_triggered_by_height_stability),
-                    // command가 1 또는 2였다면(여기서는 1만 해당. 2는 blockOcrStart로 진입 자체가 막힘)
-                    // 작업 변경 감지로 보고 0으로 리셋
                     if (_ocr_triggered_by_height_stability &&
-                        (CMD.OCR_START == command || CMD.OCR_COMPLETE == command))
+                        (command == CMD.OCR_START || command == CMD.OCR_COMPLETE))
                     {
                         command = CMD.DROP;
                     }
 
                     _ocr_triggered_by_height_stability = false;
                 }
-            }
-            else
-            {
-                // command==2/3 상태에서는 높이 기반 트리거 중단(원본과 동일 의도)
-                _ocr_triggered_by_height_stability = false;
-                _height_is_stable = false;
+
+                void StartStability()
+                {
+                    _height_is_stable = true;
+                    _stable_height_mm = forkHeight;
+                    _height_stability_start_time_utc = nowUtc;
+                }
+
+                bool HasBeenStableLongEnough()
+                {
+                    double stableSeconds = (nowUtc - _height_stability_start_time_utc).TotalSeconds;
+                    return stableSeconds >= stableDurationSec;
+                }
+
+                bool IsRetriggerDue()
+                {
+                    double sinceLastSec = (nowUtc - _last_height_ocr_trigger_time_utc).TotalSeconds;
+                    return sinceLastSec >= retriggerIntervalSec;
+                }
+
+                void TriggerOcrStartIfNeeded()
+                {
+                    SendOcrStart();
+                    _last_height_ocr_trigger_time_utc = nowUtc;
+
+                    // command==0이면 1로 올림, command==1이면 유지
+                    if (CMD.DROP == command)
+                        command = CMD.OCR_START;
+                }
             }
         }
 
-        // ==========================================
-        // 5) scan_complete 기반 command=2
-        //    - command==3은 절대 2로 내리지 않음
-        // ==========================================
-        if (CMD.PICKUP != command &&
-            ScanComplete &&
-            (nowUtc - ScanCompleteTime) <= TimeSpan.FromSeconds(60))
+        void HandleOcrComplete()
         {
+            // 5) scan_complete 기반 command=2
+            //    - command==3은 절대 2로 내리지 않음
+            if (command == CMD.PICKUP)
+                return;
+
+            if (!scanComplete)
+                return;
+
+            if ((nowUtc - scanCompleteTime) > TimeSpan.FromSeconds(60))
+                return;
+
             command = CMD.OCR_COMPLETE;
-        }
-
-        // ==========================================
-        // 6) 결과 반영(멤버 업데이트 + publish)
-        // ==========================================
-        _pickup_cantidate_active = PickupCandidateActive;
-        _pickup_candidate_starttime = PickupCandidateStartTime;
-
-        if (_current_command_value != command)
-        {
-            _current_command_value = command;
-            PublishCommand(command);
         }
     }
 
