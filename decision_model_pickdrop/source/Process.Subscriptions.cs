@@ -159,6 +159,14 @@ public partial class Process
         }
 
         _log.Info(textBuilder.ToString());
+        
+        // Input Value
+        if (null != st)
+            return;
+        
+        var ticks = (long)(payload.PubTimestamp / 100);
+        _target_weight_time = DateTime.UnixEpoch.AddTicks(ticks);
+        _target_weight = (st!.RightWeight + st.LeftWeight) / 2;
     }
 
     private void LogDistancePayload(string topic, DistanceResult payload)
@@ -190,6 +198,7 @@ public partial class Process
     {
         LogDistancePayload("Fork Height", payload);
 
+        // Input Value
         _fork_height_mm = payload.CalibratedMm;
     }
 
@@ -197,6 +206,7 @@ public partial class Process
     {
         LogDistancePayload("Fork Forward", payload);
 
+        // Input Value
         _fork_forward_mm = payload.CalibratedMm;
     }
 
